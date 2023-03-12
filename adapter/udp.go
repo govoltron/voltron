@@ -16,10 +16,23 @@ package adapter
 
 import (
 	"context"
-	"time"
+	"sync"
 
 	"github.com/govoltron/layer4"
 )
+
+type UDPServerEventHandler interface {
+
+	// OnBoot fires when the server is ready for accepting connections.
+	OnBoot()
+
+	// OnShutdown fires when the server is being shut down, it is called right after
+	// all event-loops and connections are closed.
+	OnShutdown()
+
+	// OnNewConnection fires when a new connection has been opened.
+	OnNewConnection() (handler layer4.ConnEventHandler)
+}
 
 type UDPServer struct {
 
@@ -51,24 +64,27 @@ type UDPServer struct {
 	// SocketSendBuffer sets the maximum socket send buffer in bytes.
 	SocketSendBuffer int
 
-	// OnBoot fires when the server is ready for accepting connections.
-	OnBoot func()
-
-	// OnShutdown fires when the server is being shut down, it is called right after
-	// all event-loops and connections are closed.
-	OnShutdown func()
-
-	// OnNewConnection fires when a new connection has been opened.
-	OnNewConnection func() (handler layer4.ConnEventHandler)
-
-	ctx context.Context
+	// The event handler interface for the server.
+	EventHandler UDPServerEventHandler
 
 	// The underlay server.
 	svr layer4.Server
+
+	err error
+
+	wg sync.WaitGroup
 }
 
 // Start implements voltron.Adapter
 func (us *UDPServer) Start(ctx context.Context, addr string) error {
+	if us.EventHandler == nil {
+		panic("invalid server event handler")
+	}
+
+	us.svr.OnBoot = us.EventHandler.OnBoot
+	us.svr.OnShutdown = us.EventHandler.OnShutdown
+	us.svr.OnNewConnection = us.EventHandler.OnNewConnection
+
 	us.svr.Multicore = us.Multicore
 	us.svr.LockOSThread = us.LockOSThread
 	us.svr.NumEventLoop = us.NumEventLoop
@@ -76,19 +92,6 @@ func (us *UDPServer) Start(ctx context.Context, addr string) error {
 	us.svr.ReusePort = us.ReusePort
 	us.svr.SocketRecvBuffer = us.SocketRecvBuffer
 	us.svr.SocketSendBuffer = us.SocketSendBuffer
-
-	us.svr.OnBoot = us.OnBoot
-	us.svr.OnShutdown = us.OnShutdown
-	us.svr.OnNewConnection = us.OnNewConnection
-
-	var (
-		cancelFunc func()
-	)
-	us.ctx, cancelFunc = context.WithCancel(context.TODO())
-
-	defer func() {
-		cancelFunc()
-	}()
 
 	return us.svr.RunContext(ctx, "udp", addr)
 }
@@ -103,37 +106,21 @@ func (us *UDPServer) Shutdown() {
 	us.svr.Shutdown()
 }
 
-// Wait implements voltron.Adapter
-func (us *UDPServer) Wait() {
-	if us.ctx == nil {
-		return
-	}
-	var (
-		ticker = time.NewTicker(time.Millisecond)
-	)
-	defer func() {
-		ticker.Stop()
-	}()
-	for {
-		select {
-		case <-us.ctx.Done():
-			return
-		case <-ticker.C:
-			//
-		}
-	}
+func (us *UDPServer) Dup() (dupFD int, err error) {
+	return us.svr.Dup()
 }
 
-// Ready implements voltron.Adapter
-func (us *UDPServer) Ready() bool {
-	if us.ctx == nil {
-		return false
-	}
-	select {
-	case <-us.ctx.Done():
-		return false
-	default:
-		break
-	}
-	return true
+// AsyncStart implements voltron.Adapter
+func (us *UDPServer) AsyncStart(ctx context.Context, addr string) {
+	us.wg.Add(1)
+	go func() {
+		defer us.wg.Done()
+		us.err = us.Start(ctx, addr)
+	}()
+}
+
+// Wait implements voltron.Adapter
+func (us *UDPServer) Wait() error {
+	us.wg.Wait()
+	return us.err
 }

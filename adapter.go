@@ -24,10 +24,12 @@ type Adapter interface {
 	Start(ctx context.Context, addr string) error
 	Stop(ctx context.Context) error
 	Shutdown()
-	Wait()
-	Ready() bool
+	AsyncStart(ctx context.Context, addr string)
+	Wait() error
 }
 
 var (
+	_ Adapter = &adapter.HTTPServer{}
 	_ Adapter = &adapter.TCPServer{}
+	_ Adapter = &adapter.UDPServer{}
 )

@@ -16,10 +16,34 @@ package adapter
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"github.com/govoltron/layer4"
 )
+
+type TCPServerEventHandler interface {
+
+	// OnBoot fires when the server is ready for accepting connections.
+	OnBoot()
+
+	// OnShutdown fires when the server is being shut down, it is called right after
+	// all event-loops and connections are closed.
+	OnShutdown()
+
+	// OnConnect fires when a new connection has been opened.
+	//
+	// The Conn conn has information about the connection such as its local and remote addresses.
+	OnConnect(conn layer4.Conn)
+
+	// OnDisconnect fires when a connection has been closed.
+	//
+	// The parameter err is the last known connection error.
+	OnDisconnect(conn layer4.Conn, err error)
+
+	// OnNewConnection fires when a new connection has been opened.
+	OnNewConnection() (handler layer4.ConnEventHandler)
+}
 
 type TCPServer struct {
 
@@ -54,34 +78,29 @@ type TCPServer struct {
 	// TCPKeepAlive sets up a duration for (SO_KEEPALIVE) socket option.
 	TCPKeepAlive time.Duration
 
-	// OnBoot fires when the server is ready for accepting connections.
-	OnBoot func()
-
-	// OnShutdown fires when the server is being shut down, it is called right after
-	// all event-loops and connections are closed.
-	OnShutdown func()
-
-	// OnConnect fires when a new connection has been opened.
-	//
-	// The Conn conn has information about the connection such as its local and remote addresses.
-	OnConnect func(conn layer4.Conn)
-
-	// OnDisconnect fires when a connection has been closed.
-	//
-	// The parameter err is the last known connection error.
-	OnDisconnect func(conn layer4.Conn, err error)
-
-	// OnNewConnection fires when a new connection has been opened.
-	OnNewConnection func() (handler layer4.ConnEventHandler)
-
-	ctx context.Context
+	// The event handler interface for the server.
+	EventHandler TCPServerEventHandler
 
 	// The underlay server.
 	svr layer4.Server
+
+	err error
+
+	wg sync.WaitGroup
 }
 
 // Start implements voltron.Adapter
 func (ts *TCPServer) Start(ctx context.Context, addr string) error {
+	if ts.EventHandler == nil {
+		panic("invalid server event handler")
+	}
+
+	ts.svr.OnBoot = ts.EventHandler.OnBoot
+	ts.svr.OnShutdown = ts.EventHandler.OnShutdown
+	ts.svr.OnConnect = ts.EventHandler.OnConnect
+	ts.svr.OnDisconnect = ts.EventHandler.OnDisconnect
+	ts.svr.OnNewConnection = ts.EventHandler.OnNewConnection
+
 	ts.svr.Multicore = ts.Multicore
 	ts.svr.LockOSThread = ts.LockOSThread
 	ts.svr.NumEventLoop = ts.NumEventLoop
@@ -90,21 +109,6 @@ func (ts *TCPServer) Start(ctx context.Context, addr string) error {
 	ts.svr.SocketRecvBuffer = ts.SocketRecvBuffer
 	ts.svr.SocketSendBuffer = ts.SocketSendBuffer
 	ts.svr.TCPKeepAlive = ts.TCPKeepAlive
-
-	ts.svr.OnBoot = ts.OnBoot
-	ts.svr.OnShutdown = ts.OnShutdown
-	ts.svr.OnConnect = ts.OnConnect
-	ts.svr.OnDisconnect = ts.OnDisconnect
-	ts.svr.OnNewConnection = ts.OnNewConnection
-
-	var (
-		cancelFunc func()
-	)
-	ts.ctx, cancelFunc = context.WithCancel(context.TODO())
-
-	defer func() {
-		cancelFunc()
-	}()
 
 	return ts.svr.RunContext(ctx, "tcp", addr)
 }
@@ -119,37 +123,25 @@ func (ts *TCPServer) Shutdown() {
 	ts.svr.Shutdown()
 }
 
-// Wait implements voltron.Adapter
-func (ts *TCPServer) Wait() {
-	if ts.ctx == nil {
-		return
-	}
-	var (
-		ticker = time.NewTicker(time.Millisecond)
-	)
-	defer func() {
-		ticker.Stop()
-	}()
-	for {
-		select {
-		case <-ts.ctx.Done():
-			return
-		case <-ticker.C:
-			//
-		}
-	}
+func (ts *TCPServer) Dup() (dupFD int, err error) {
+	return ts.svr.Dup()
 }
 
-// Ready implements voltron.Adapter
-func (ts *TCPServer) Ready() bool {
-	if ts.ctx == nil {
-		return false
-	}
-	select {
-	case <-ts.ctx.Done():
-		return false
-	default:
-		break
-	}
-	return true
+func (ts *TCPServer) NumConnections() (num int) {
+	return ts.svr.NumConnections()
+}
+
+// AsyncStart implements voltron.Adapter
+func (ts *TCPServer) AsyncStart(ctx context.Context, addr string) {
+	ts.wg.Add(1)
+	go func() {
+		defer ts.wg.Done()
+		ts.err = ts.Start(ctx, addr)
+	}()
+}
+
+// Wait implements voltron.Adapter
+func (ts *TCPServer) Wait() error {
+	ts.wg.Wait()
+	return ts.err
 }

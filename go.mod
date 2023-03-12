@@ -2,7 +2,10 @@ module github.com/govoltron/voltron
 
 go 1.17
 
-require github.com/govoltron/layer4 v0.0.0-20230311134351-db5fddd365e1
+require (
+	github.com/go-chi/chi v1.5.4
+	github.com/govoltron/layer4 v0.0.0-20230312085210-6263f34adbb3
+)
 
 require (
 	github.com/panjf2000/gnet/v2 v2.2.5 // indirect
