@@ -16,6 +16,8 @@ package adapter
 
 import (
 	"context"
+	"errors"
+	"net"
 	"sync"
 	"time"
 
@@ -144,4 +146,97 @@ func (ts *TCPServer) AsyncStart(ctx context.Context, addr string) {
 func (ts *TCPServer) Wait() error {
 	ts.wg.Wait()
 	return ts.err
+}
+
+type TCPListener struct {
+
+	// Multicore indicates whether the engine will be effectively created with multi-cores, if so,
+	// then you must take care with synchronizing memory between all event callbacks, otherwise,
+	// it will run the engine with single thread. The number of threads in the engine will be automatically
+	// assigned to the value of logical CPUs usable by the current process.
+	Multicore bool
+
+	// LockOSThread is used to determine whether each I/O event-loop is associated to an OS thread, it is useful when you
+	// need some kind of mechanisms like thread local storage, or invoke certain C libraries (such as graphics lib: GLib)
+	// that require thread-level manipulation via cgo, or want all I/O event-loops to actually run in parallel for a
+	// potential higher performance.
+	LockOSThread bool
+
+	// NumEventLoop is set up to start the given number of event-loop goroutine.
+	// Note: Setting up NumEventLoop will override Multicore.
+	NumEventLoop int
+
+	// ReuseAddr indicates whether to set up the SO_REUSEADDR socket option.
+	ReuseAddr bool
+
+	// ReusePort indicates whether to set up the SO_REUSEPORT socket option.
+	ReusePort bool
+
+	// SocketRecvBuffer sets the maximum socket receive buffer in bytes.
+	SocketRecvBuffer int
+
+	// SocketSendBuffer sets the maximum socket send buffer in bytes.
+	SocketSendBuffer int
+
+	// TCPKeepAlive sets up a duration for (SO_KEEPALIVE) socket option.
+	TCPKeepAlive time.Duration
+
+	// The underlay server.
+	svr layer4.Server
+
+	err error
+
+	wg sync.WaitGroup
+
+	addr     string
+	pipeline chan net.Conn
+}
+
+func (tl *TCPListener) AsyncStart(ctx context.Context, addr string) {
+	tl.svr.Multicore = tl.Multicore
+	tl.svr.LockOSThread = tl.LockOSThread
+	tl.svr.NumEventLoop = tl.NumEventLoop
+	tl.svr.ReuseAddr = tl.ReuseAddr
+	tl.svr.ReusePort = tl.ReusePort
+	tl.svr.SocketRecvBuffer = tl.SocketRecvBuffer
+	tl.svr.SocketSendBuffer = tl.SocketSendBuffer
+	tl.svr.TCPKeepAlive = tl.TCPKeepAlive
+	tl.svr.OnConnect = func(conn layer4.Conn) { tl.pipeline <- conn }
+
+	tl.addr = addr
+	tl.pipeline = make(chan net.Conn, 10240)
+
+	tl.wg.Add(1)
+	go func() {
+		defer func() {
+			close(tl.pipeline)
+			tl.wg.Done()
+		}()
+		tl.err = tl.svr.RunContext(ctx, "tcp", addr)
+	}()
+}
+
+func (tl *TCPListener) Wait() error {
+	tl.wg.Wait()
+	return tl.err
+}
+
+// Accept implements net.Listener
+func (tl *TCPListener) Accept() (net.Conn, error) {
+	conn, ok := <-tl.pipeline
+	if !ok {
+		return nil, errors.New("pipeline is closed")
+	}
+	return conn, nil
+}
+
+// Addr implements net.Listener
+func (tl *TCPListener) Addr() (addr net.Addr) {
+	addr, _ = net.ResolveTCPAddr("tcp", tl.addr)
+	return
+}
+
+// Close implements net.Listener
+func (tl *TCPListener) Close() error {
+	return tl.svr.Stop(context.TODO())
 }

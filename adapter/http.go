@@ -16,99 +16,90 @@ package adapter
 
 import (
 	"context"
-	"errors"
-	"net"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/go-chi/chi"
-	"github.com/govoltron/layer4"
-)
-
-type listener struct {
-	addr string
-	svr  layer4.Server
-	pipe chan layer4.Conn
-}
-
-// OnBoot implements TCPServerEventHandler
-func (l *listener) OnBoot() {
-	l.pipe = make(chan layer4.Conn, 10240)
-}
-
-// OnShutdown implements TCPServerEventHandler
-func (l *listener) OnShutdown() {
-	close(l.pipe)
-}
-
-// OnConnect implements TCPServerEventHandler
-func (l *listener) OnConnect(conn layer4.Conn) {
-	l.pipe <- conn
-}
-
-// OnDisconnect implements TCPServerEventHandler
-func (l *listener) OnDisconnect(conn layer4.Conn, err error) {
-
-}
-
-// Accept implements net.Listener
-func (l *listener) Accept() (net.Conn, error) {
-	conn, ok := <-l.pipe
-	if !ok {
-		return nil, errors.New("already shutdown")
-	}
-	return conn, nil
-}
-
-// Addr implements net.Listener
-func (l *listener) Addr() (addr net.Addr) {
-	addr, _ = net.ResolveTCPAddr("tcp", l.addr)
-	return
-}
-
-// Close implements net.Listener
-func (l *listener) Close() error {
-	return l.svr.Stop(context.TODO())
-}
-
-func (l *listener) CloseContext(ctx context.Context) error {
-	return l.svr.Stop(ctx)
-}
-
-func (l *listener) Shutdown() {
-	l.svr.Shutdown()
-}
-
-var (
-	_ net.Listener = &listener{}
 )
 
 type HTTPServer struct {
-	l      listener
-	err    error
-	wg     sync.WaitGroup
+
+	// Multicore indicates whether the engine will be effectively created with multi-cores, if so,
+	// then you must take care with synchronizing memory between all event callbacks, otherwise,
+	// it will run the engine with single thread. The number of threads in the engine will be automatically
+	// assigned to the value of logical CPUs usable by the current process.
+	Multicore bool
+
+	// LockOSThread is used to determine whether each I/O event-loop is associated to an OS thread, it is useful when you
+	// need some kind of mechanisms like thread local storage, or invoke certain C libraries (such as graphics lib: GLib)
+	// that require thread-level manipulation via cgo, or want all I/O event-loops to actually run in parallel for a
+	// potential higher performance.
+	LockOSThread bool
+
+	// NumEventLoop is set up to start the given number of event-loop goroutine.
+	// Note: Setting up NumEventLoop will override Multicore.
+	NumEventLoop int
+
+	// ReuseAddr indicates whether to set up the SO_REUSEADDR socket option.
+	ReuseAddr bool
+
+	// ReusePort indicates whether to set up the SO_REUSEPORT socket option.
+	ReusePort bool
+
+	// SocketRecvBuffer sets the maximum socket receive buffer in bytes.
+	SocketRecvBuffer int
+
+	// SocketSendBuffer sets the maximum socket send buffer in bytes.
+	SocketSendBuffer int
+
+	// TCPKeepAlive sets up a duration for (SO_KEEPALIVE) socket option.
+	TCPKeepAlive time.Duration
+
 	Router chi.Router
+
+	err error
+
+	wg sync.WaitGroup
 }
 
 // Start implements voltron.Adapter
 func (hs *HTTPServer) Start(ctx context.Context, addr string) error {
-	hs.l.addr = addr
-	hs.l.svr.OnBoot = hs.l.OnBoot
-	hs.l.svr.OnShutdown = hs.l.OnShutdown
-	hs.l.svr.OnConnect = hs.l.OnConnect
-	hs.l.svr.OnDisconnect = hs.l.OnDisconnect
+	// hs.l.addr = addr
+	// hs.l.svr.OnBoot = hs.l.OnBoot
+	// hs.l.svr.OnShutdown = hs.l.OnShutdown
+	// hs.l.svr.OnConnect = hs.l.OnConnect
+	// hs.l.svr.OnDisconnect = hs.l.OnDisconnect
 
-	return http.Serve(&hs.l, hs.Router)
+	// go func() {
+	// 	hs.l.svr.RunContext(ctx, "tcp", addr)
+	// }()
+
+	var listener = &TCPListener{
+		Multicore:        hs.Multicore,
+		LockOSThread:     hs.LockOSThread,
+		NumEventLoop:     hs.NumEventLoop,
+		ReuseAddr:        hs.ReuseAddr,
+		ReusePort:        hs.ReusePort,
+		SocketRecvBuffer: hs.SocketRecvBuffer,
+		SocketSendBuffer: hs.SocketSendBuffer,
+		TCPKeepAlive:     hs.TCPKeepAlive,
+	}
+
+	listener.AsyncStart(ctx, addr)
+
+	return http.Serve(listener, hs.Router)
 }
 
 // Stop implements voltron.Adapter
 func (hs *HTTPServer) Stop(ctx context.Context) error {
-	return hs.l.CloseContext(ctx)
+	// return hs.l.CloseContext(ctx)
+	return nil
 }
 
 // Shutdown implements voltron.Adapter
 func (hs *HTTPServer) Shutdown() {
-	hs.l.Shutdown()
+	// hs.l.Shutdown()
 }
 
 // AsyncStart implements voltron.Adapter
