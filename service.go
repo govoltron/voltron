@@ -17,7 +17,6 @@ package voltron
 import (
 	"context"
 	"sync"
-	"time"
 
 	"github.com/govoltron/matrix"
 )
@@ -50,7 +49,7 @@ func (fun ServiceFunc) Shutdown(ctx context.Context)         {}
 type RunOption func(s *service)
 
 // WithAutoReport
-func WithAutoReport(addr string, weight int, ttl time.Duration) RunOption {
+func WithAutoReport(addr string, weight int, ttl int64) RunOption {
 	return func(s *service) { s.addr, s.weight, s.ttl = addr, weight, ttl }
 }
 
@@ -66,7 +65,7 @@ type service struct {
 	reporter *matrix.Reporter
 	addr     string
 	weight   int
-	ttl      time.Duration
+	ttl      int64
 }
 
 // Type implements Runner
@@ -116,7 +115,7 @@ func (s *service) boot(ctx context.Context, signal chan struct{}, wg *sync.WaitG
 		// Reporter
 		if s.reporter != nil {
 			s.reporter.Keepalive(s.addr, s.weight, s.ttl)
-			defer s.reporter.Close()
+			defer s.reporter.Close(ctx)
 		}
 
 		// Run

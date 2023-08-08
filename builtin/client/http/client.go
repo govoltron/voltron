@@ -22,12 +22,13 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/gojek/heimdall/v7/httpclient"
 	"github.com/govoltron/matrix"
+	"github.com/govoltron/matrix/balance"
 	"github.com/govoltron/voltron"
-	"go.uber.org/atomic"
 )
 
 var (
@@ -35,13 +36,13 @@ var (
 )
 
 type ClientOptions struct {
-	SevName    string   `json:"-"`
-	Raw        string   `json:"-"`
-	Endpoints  []string `json:"-"`
-	Scheme     string   `json:"scheme,omitempty"`
-	Host       string   `json:"host,omitempty"`
-	Timeout    int64    `json:"timeout,omitempty"`
-	RetryCount int      `json:"retry_count,omitempty"`
+	SevName    string            `json:"-"`
+	Raw        string            `json:"-"`
+	Endpoints  []matrix.Endpoint `json:"-"`
+	Scheme     string            `json:"scheme,omitempty"`
+	Host       string            `json:"host,omitempty"`
+	Timeout    int64             `json:"timeout,omitempty"`
+	RetryCount int               `json:"retry_count,omitempty"`
 }
 
 // ServiceName
@@ -52,10 +53,10 @@ func (opts *ClientOptions) ServiceName() (name string) {
 type Client struct {
 	scheme    string
 	host      string
-	balance   atomic.Uint32
-	endpoints []string
+	endpoints []matrix.Endpoint
+	balancer  *balance.WeightRoundRobinBalancer
 	client    *httpclient.Client
-	ready     atomic.Bool
+	ready     uint32
 }
 
 // Name implements voltron.Client
@@ -65,18 +66,13 @@ func (c *Client) Name() (name string) {
 
 // Init implements voltron.Client
 func (c *Client) Init(ctx context.Context, opts voltron.ClientOptions) (err error) {
-	if c.ready.Load() {
-		return nil
-	}
-	defer func() {
-		if err == nil {
-			c.ready.Store(true)
-		}
-	}()
-
 	co, ok := opts.(*ClientOptions)
 	if !ok {
 		return fmt.Errorf("invalid options for http client")
+	}
+
+	if !atomic.CompareAndSwapUint32(&c.ready, 0, 1) {
+		return
 	}
 
 	hcopts := make([]httpclient.Option, 0)
@@ -92,6 +88,11 @@ func (c *Client) Init(ctx context.Context, opts voltron.ClientOptions) (err erro
 	c.endpoints = co.Endpoints
 	c.client = httpclient.NewClient(hcopts...)
 
+	c.balancer = balance.NewWeightRoundRobinBalancer()
+	for _, endpoint := range c.endpoints {
+		c.balancer.Add(balance.Endpoint{Addr: endpoint.Addr, Weight: endpoint.Weight})
+	}
+
 	return
 }
 
@@ -101,7 +102,7 @@ func (c *Client) ReInit(ctx context.Context, opts voltron.ClientOptions) (err er
 }
 
 // NewOptions
-func (c *Client) NewOptions(ctx context.Context, options []byte, endpoints []matrix.Endpoint, discovery *voltron.DiscoveryOptions) voltron.ClientOptions {
+func (c *Client) NewOptions(ctx context.Context, options []byte, endpoints []matrix.Endpoint) voltron.ClientOptions {
 	var (
 		opts = &ClientOptions{}
 	)
@@ -110,51 +111,46 @@ func (c *Client) NewOptions(ctx context.Context, options []byte, endpoints []mat
 	json.Unmarshal(options, opts)
 	// Endpoints
 	for _, endpoint := range endpoints {
-		opts.Endpoints = append(opts.Endpoints, endpoint.Addr)
+		opts.Endpoints = append(opts.Endpoints, endpoint)
 	}
 	return opts
 }
 
 // Shutdown implements voltron.Client
 func (c *Client) Shutdown(ctx context.Context) {
-	if !c.ready.Load() {
-		return
-	}
-	defer func() {
-		c.ready.Store(false)
-	}()
+	atomic.CompareAndSwapUint32(&c.ready, 1, 0)
 }
 
 func (c *Client) Get(uri string, headers http.Header) (*http.Response, error) {
-	if !c.ready.Load() {
+	if atomic.LoadUint32(&c.ready) != 1 {
 		return nil, ErrClientNotReady
 	}
 	return c.client.Get(c.buildUrl(uri), c.buildHeaders(headers))
 }
 
 func (c *Client) Post(uri string, body io.Reader, headers http.Header) (*http.Response, error) {
-	if !c.ready.Load() {
+	if atomic.LoadUint32(&c.ready) != 1 {
 		return nil, ErrClientNotReady
 	}
 	return c.client.Post(c.buildUrl(uri), body, c.buildHeaders(headers))
 }
 
 func (c *Client) Put(uri string, body io.Reader, headers http.Header) (*http.Response, error) {
-	if !c.ready.Load() {
+	if atomic.LoadUint32(&c.ready) != 1 {
 		return nil, ErrClientNotReady
 	}
 	return c.client.Put(c.buildUrl(uri), body, c.buildHeaders(headers))
 }
 
 func (c *Client) Patch(uri string, body io.Reader, headers http.Header) (*http.Response, error) {
-	if !c.ready.Load() {
+	if atomic.LoadUint32(&c.ready) != 1 {
 		return nil, ErrClientNotReady
 	}
 	return c.client.Patch(c.buildUrl(uri), body, c.buildHeaders(headers))
 }
 
 func (c *Client) Delete(uri string, headers http.Header) (*http.Response, error) {
-	if !c.ready.Load() {
+	if atomic.LoadUint32(&c.ready) != 1 {
 		return nil, ErrClientNotReady
 	}
 	return c.client.Delete(c.buildUrl(uri), c.buildHeaders(headers))
@@ -162,7 +158,7 @@ func (c *Client) Delete(uri string, headers http.Header) (*http.Response, error)
 
 // buildUrl
 func (c *Client) buildUrl(uri string) string {
-	addr := c.scheme + "://" + c.endpoints[int(c.balance.Inc())%len(c.endpoints)]
+	addr := c.scheme + "://" + c.balancer.Next()
 	if uri == "/" {
 		return addr
 	}

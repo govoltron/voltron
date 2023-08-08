@@ -35,7 +35,7 @@ type Client interface {
 	ReInit(ctx context.Context, opts ClientOptions) (err error)
 
 	// NewOptions
-	NewOptions(ctx context.Context, options []byte, endpoints []matrix.Endpoint, discovery *DiscoveryOptions) (opts ClientOptions)
+	NewOptions(ctx context.Context, options []byte, endpoints []matrix.Endpoint) (opts ClientOptions)
 
 	// Shutdown
 	Shutdown(ctx context.Context)
@@ -116,7 +116,7 @@ func (w *discoveryWatcher) Init(ctx context.Context) (err error) {
 	}
 
 	return w.c.rt.Init(ctx,
-		w.c.rt.NewOptions(ctx, w.options, endpoints, w.discovery),
+		w.c.rt.NewOptions(ctx, w.options, endpoints),
 	)
 }
 
@@ -128,7 +128,7 @@ func (w *discoveryWatcher) reinit() (err error) {
 	}
 	ctx := context.Background()
 	return w.c.rt.ReInit(ctx,
-		w.c.rt.NewOptions(ctx, w.options, endpoints, w.discovery),
+		w.c.rt.NewOptions(ctx, w.options, endpoints),
 	)
 }
 

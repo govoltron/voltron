@@ -181,7 +181,7 @@ func (vol *Voltron) run(ctx context.Context) (err error) {
 	// Prepare all services
 	for _, s := range vol.services {
 		// Option: reporter
-		if s.addr != "" && s.weight >= 0 {
+		if s.addr != "" {
 			s.reporter = vol.cluster.NewReporter(ctx, s.Name())
 		}
 		// Prepare
