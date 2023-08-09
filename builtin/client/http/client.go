@@ -109,10 +109,14 @@ func (c *Client) NewOptions(ctx context.Context, options []byte, endpoints []mat
 	opts.Raw = string(options)
 	// Decode options
 	json.Unmarshal(options, opts)
-	// Endpoints
-	for _, endpoint := range endpoints {
-		opts.Endpoints = append(opts.Endpoints, endpoint)
+	// Option: Scheme
+	if opts.Scheme == "" {
+		opts.Scheme = "http"
 	}
+
+	// Endpoints
+	opts.Endpoints = append(opts.Endpoints, endpoints...)
+
 	return opts
 }
 
